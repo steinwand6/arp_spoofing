@@ -27,50 +27,23 @@ fn main() {
         .expect("Interface not found");
     println!("{:?}", interface);
 
-    // get target MAC
+    // get target info
     let local_info = IpMacPair::new(&interface);
+
     let target_ip: Ipv4Addr = cli
         .target_ip
         .parse()
         .expect("Unable to parse target_ip as IPv4 address");
-    let mut target_info = IpMacPair {
-        ip: target_ip,
-        mac: MacAddr::zero(),
-    };
-    let mut arp_req_ = [0; PKT_ARP_SIZE];
-    let arp_req = create_arp_request(&mut arp_req_, &local_info, &target_info);
-    let mut ether_req_ = [0; PKT_ETH_SIZE + PKT_ARP_SIZE];
-    let mut ether_req =
-        MutableEthernetPacket::new(&mut ether_req_).expect("Failed to create ethernet packet");
-    ether_req.set_destination(MacAddr::broadcast());
-    ether_req.set_source(local_info.mac);
-    ether_req.set_ethertype(EtherTypes::Arp);
-    ether_req.set_payload(arp_req.packet());
-
-    let (mut ds, mut dr) = match datalink::channel(&interface, Default::default()) {
-        Ok(datalink::Channel::Ethernet(ds, dr)) => (ds, dr),
-        Ok(_) => panic!("not channel"),
-        Err(e) => {
-            panic!("error {}", e);
-        }
-    };
-    ds.send_to(ether_req.packet(), None);
-    match dr.next() {
-        Ok(p) => {
-            let ehter_repaly = EthernetPacket::new(p).expect("Failed to get Ether packet");
-            let arp_reply =
-                ArpPacket::new(ehter_repaly.payload()).expect("Failed to get ARP packet");
-            if arp_reply.get_operation() == ArpOperations::Reply {
-                target_info.ip = arp_reply.get_sender_proto_addr();
-                target_info.mac = arp_reply.get_sender_hw_addr();
-            } else {
-                eprintln!("Failed to get target address info");
-                return;
-            }
-        }
-        Err(e) => print!("{e}"),
-    }
+    let target_info = get_addr_by_ip(&interface, &local_info, target_ip);
     println!("{:?}", target_info);
+
+    // get source info
+    let source_ip: Ipv4Addr = cli
+        .source_ip
+        .parse()
+        .expect("Unable to parse source_ip as IPv4 address");
+    let source_info = get_addr_by_ip(&interface, &local_info, source_ip);
+    println!("{:?}", source_info);
 
     // send ARP packet
 
@@ -132,4 +105,50 @@ fn create_arp_request<'a>(
     packet.set_target_hw_addr(MacAddr::zero());
     packet.set_target_proto_addr(target_info.ip);
     packet
+}
+
+fn get_addr_by_ip(
+    interface: &NetworkInterface,
+    local_info: &IpMacPair,
+    target_ip: Ipv4Addr,
+) -> Option<IpMacPair> {
+    let mut target_info = IpMacPair {
+        ip: target_ip,
+        mac: MacAddr::zero(),
+    };
+
+    let mut arp_req_ = [0; PKT_ARP_SIZE];
+    let arp_req = create_arp_request(&mut arp_req_, &local_info, &target_info);
+    let mut ether_req_ = [0; PKT_ETH_SIZE + PKT_ARP_SIZE];
+    let mut ether_req =
+        MutableEthernetPacket::new(&mut ether_req_).expect("Failed to create ethernet packet");
+    ether_req.set_destination(MacAddr::broadcast());
+    ether_req.set_source(local_info.mac);
+    ether_req.set_ethertype(EtherTypes::Arp);
+    ether_req.set_payload(arp_req.packet());
+
+    let (mut ds, mut dr) = match datalink::channel(&interface, Default::default()) {
+        Ok(datalink::Channel::Ethernet(ds, dr)) => (ds, dr),
+        Ok(_) => panic!("not channel"),
+        Err(e) => {
+            panic!("error {}", e);
+        }
+    };
+    ds.send_to(ether_req.packet(), None);
+    match dr.next() {
+        Ok(p) => {
+            let ehter_repaly = EthernetPacket::new(p).expect("Failed to get Ether packet");
+            let arp_reply =
+                ArpPacket::new(ehter_repaly.payload()).expect("Failed to get ARP packet");
+            if arp_reply.get_operation() == ArpOperations::Reply {
+                target_info.ip = arp_reply.get_sender_proto_addr();
+                target_info.mac = arp_reply.get_sender_hw_addr();
+            } else {
+                eprintln!("Failed to get target address info");
+                return None;
+            }
+        }
+        Err(e) => print!("{e}"),
+    }
+    Some(target_info)
 }
